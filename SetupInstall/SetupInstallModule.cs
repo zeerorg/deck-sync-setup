@@ -1,8 +1,3 @@
-using System.Formats.Tar;
-using System.IO.Compression;
-using System.Runtime.InteropServices;
-using System.Runtime.Versioning;
-
 /// <summary>
 /// Implements <see cref="ISetupInstallModule"/>. Fetches the latest stable release via the
 /// GitHub API, selects the best archive asset for the current OS and architecture, downloads
@@ -14,6 +9,7 @@ public sealed class SetupInstallModule : ISetupInstallModule
 {
     private readonly ISetupInstallGitHubPort _gitHubPort;
     private readonly PlatformAssetFragments _platformFragments;
+    private readonly IArchiveExtractionModule _archiveExtractionModule;
     private readonly string? _deckSyncRuntimeDirectory;
 
     /// <param name="gitHubPort">Adapter used to list releases and stream asset downloads.</param>
@@ -22,6 +18,9 @@ public sealed class SetupInstallModule : ISetupInstallModule
     /// <see cref="PlatformAssetFragments"/> (e.g. <see cref="PlatformAssetFragments.Rclone"/>)
     /// or supply custom fragments for other tools.
     /// </param>
+    /// <param name="archiveExtractionModule">
+    /// Module used to unpack the downloaded archive into the Deck sync runtime directory.
+    /// </param>
     /// <param name="deckSyncRuntimeDirectory">
     /// Overrides the Deck sync runtime directory. When <see langword="null"/>,
     /// <see cref="DeckSyncRuntimeDirectory.Resolve"/> is used to determine the default.
@@ -29,10 +28,12 @@ public sealed class SetupInstallModule : ISetupInstallModule
     public SetupInstallModule(
         ISetupInstallGitHubPort gitHubPort,
         PlatformAssetFragments platformFragments,
+        IArchiveExtractionModule archiveExtractionModule,
         string? deckSyncRuntimeDirectory = null)
     {
         _gitHubPort = gitHubPort;
         _platformFragments = platformFragments;
+        _archiveExtractionModule = archiveExtractionModule;
         _deckSyncRuntimeDirectory = deckSyncRuntimeDirectory;
     }
 
@@ -109,7 +110,7 @@ public sealed class SetupInstallModule : ISetupInstallModule
 
             try
             {
-                await ExtractExecutablesAsync(tempPath, deckSyncDirectory, cancellationToken);
+                await _archiveExtractionModule.ExtractExecutablesAsync(tempPath, deckSyncDirectory, cancellationToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException and not SetupInstallException)
             {
@@ -195,123 +196,7 @@ public sealed class SetupInstallModule : ISetupInstallModule
             || assetName.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>
-    /// Extracts executable files from <paramref name="archivePath"/> into
-    /// <paramref name="destinationDirectory"/>. Dispatches to the tar.gz or zip extractor
-    /// based on the archive extension. On Linux and macOS, also sets the execute permission
-    /// on every extracted file.
-    /// </summary>
-    private static async Task ExtractExecutablesAsync(
-        string archivePath,
-        string destinationDirectory,
-        CancellationToken cancellationToken)
-    {
-        if (archivePath.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase))
-            await ExtractExecutablesFromTarGzAsync(archivePath, destinationDirectory, cancellationToken);
-        else
-            ExtractExecutablesFromZip(archivePath, destinationDirectory);
-
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            SetExecutablePermissions(destinationDirectory);
-    }
-
-    /// <summary>
-    /// Streams a gzip-compressed tar archive and extracts entries that have any Unix execute
-    /// bit set in their mode.
-    /// </summary>
-    private static async Task ExtractExecutablesFromTarGzAsync(
-        string archivePath,
-        string destinationDirectory,
-        CancellationToken cancellationToken)
-    {
-        await using var fileStream = File.OpenRead(archivePath);
-        await using var gzipStream = new GZipStream(fileStream, CompressionMode.Decompress);
-        using var tarReader = new TarReader(gzipStream);
-
-        while (await tarReader.GetNextEntryAsync(copyData: false, cancellationToken) is TarEntry entry)
-        {
-            if (!IsExecutableTarEntry(entry))
-                continue;
-
-            var fileName = Path.GetFileName(entry.Name);
-            if (string.IsNullOrEmpty(fileName))
-                continue;
-
-            await entry.ExtractToFileAsync(
-                Path.Combine(destinationDirectory, fileName),
-                true,
-                cancellationToken);
-        }
-    }
-
-    /// <summary>
-    /// Reads a zip archive and extracts entries identified as executables (Unix execute bits
-    /// in external attributes, or <c>.exe</c> extension for Windows-created zips).
-    /// </summary>
-    private static void ExtractExecutablesFromZip(string archivePath, string destinationDirectory)
-    {
-        using var zip = ZipFile.OpenRead(archivePath);
-        foreach (var entry in zip.Entries)
-        {
-            if (!IsExecutableZipEntry(entry))
-                continue;
-
-            var fileName = Path.GetFileName(entry.FullName);
-            if (string.IsNullOrEmpty(fileName))
-                continue;
-
-            entry.ExtractToFile(Path.Combine(destinationDirectory, fileName), overwrite: true);
-        }
-    }
-
-    /// <summary>
-    /// Returns <see langword="true"/> for tar entries that are regular files with any execute
-    /// bit set in their Unix mode.
-    /// </summary>
-    private static bool IsExecutableTarEntry(TarEntry entry) =>
-        entry.EntryType is TarEntryType.RegularFile or TarEntryType.V7RegularFile
-        && (entry.Mode & (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) != 0;
-
-    /// <summary>
-    /// Returns <see langword="true"/> for zip entries that are executable files.
-    /// Always includes <c>.exe</c> files (Windows executables are not marked with Unix execute
-    /// bits when zipped on Linux). For non-<c>.exe</c> entries, checks Unix permission bits in
-    /// the upper 16 bits of <see cref="ZipArchiveEntry.ExternalAttributes"/> to identify
-    /// Linux/macOS binaries in Unix-created zip archives.
-    /// </summary>
-    private static bool IsExecutableZipEntry(ZipArchiveEntry entry)
-    {
-        if (entry.FullName.EndsWith('/'))
-            return false;
-
-        // .exe files are Windows executables — always include them regardless of Unix attributes.
-        // Linux CI tools (syncthing, ludusavi) zip .exe files with 0644 (no execute bits), so
-        // checking Unix attributes here would incorrectly exclude them.
-        if (entry.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        // For non-.exe entries (Linux/macOS binaries in zip archives): check execute bits.
-        var unixMode = entry.ExternalAttributes >> 16;
-        return unixMode != 0 && (unixMode & 0b001_001_001) != 0;
-    }
-
-    /// <summary>
-    /// Adds user, group, and other execute bits to every file in <paramref name="directory"/>.
-    /// Called after extraction on Linux and macOS.
-    /// </summary>
-    [UnsupportedOSPlatform("windows")]
-    private static void SetExecutablePermissions(string directory)
-    {
-        foreach (var file in Directory.GetFiles(directory))
-        {
-            var current = File.GetUnixFileMode(file);
-            File.SetUnixFileMode(file,
-                current | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
-        }
-    }
-
     /// <summary>Returns the file extension of the archive, preserving <c>.tar.gz</c> as a unit.</summary>
     private static string ArchiveExtension(string assetName) =>
         assetName.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase) ? ".tar.gz" : ".zip";
-
 }

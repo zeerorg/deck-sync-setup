@@ -54,6 +54,8 @@ public enum SetupInstallError
     NoCompatibleAsset,
     /// <summary>The Deck sync runtime directory path could not be resolved (e.g. home directory unavailable).</summary>
     DeckSyncRuntimeDirectoryUnavailable,
+    /// <summary>The Deck sync runtime directory already exists and must be removed before installing again.</summary>
+    DeckSyncRuntimeDirectoryAlreadyExists,
     /// <summary>A network error prevented the release list or asset from being fetched.</summary>
     DownloadFailed,
     /// <summary>The downloaded archive could not be written to disk.</summary>
