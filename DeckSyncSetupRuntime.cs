@@ -1,14 +1,12 @@
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using Microsoft.Win32;
-using SharpYaml;
 
 public static class DeckSyncSetupRuntime
 {
     public static async Task InstallAsync(
         string deckSyncDirectory,
         string backupDirectory,
-        IReadOnlyList<string>? customBackupFiles = null,
         Action<string>? log = null,
         CancellationToken cancellationToken = default)
     {
@@ -36,11 +34,11 @@ public static class DeckSyncSetupRuntime
             log?.Invoke($"  {result.AssetName} from {result.ReleaseTag} → {result.DestinationPath}");
         }
 
-        log?.Invoke("Creating Ludusavi config...");
+        log?.Invoke("Seeding Ludusavi config...");
         var configuredRoots = await CreateLudusaviConfigAsync(
             deckSyncDirectory,
             backupDirectory,
-            customBackupFiles,
+            log,
             cancellationToken);
         if (configuredRoots == 0)
         {
@@ -49,7 +47,7 @@ public static class DeckSyncSetupRuntime
         }
 
         log?.Invoke("Running Ludusavi backup...");
-        await RunLudusaviBackupAsync(deckSyncDirectory, cancellationToken);
+        await RunLudusaviBackupAsync(deckSyncDirectory, log, cancellationToken);
         log?.Invoke("  Ludusavi backup completed.");
     }
 
@@ -91,57 +89,72 @@ public static class DeckSyncSetupRuntime
     private static async Task<int> CreateLudusaviConfigAsync(
         string deckSyncDirectory,
         string backupDirectory,
-        IReadOnlyList<string>? customBackupFiles,
+        Action<string>? log,
         CancellationToken cancellationToken)
     {
         var configDirectory = Path.Combine(deckSyncDirectory, "config");
         var configPath = Path.Combine(configDirectory, "config.yaml");
+        var rcloneExecutable = ResolveDeckSyncExecutablePath(deckSyncDirectory, "rclone");
+        var rcloneConfigPath = Path.Combine(deckSyncDirectory, "rclone.conf");
         var roots = ResolveLudusaviRoots();
 
         Directory.CreateDirectory(configDirectory);
         Directory.CreateDirectory(backupDirectory);
 
-        var config = new Dictionary<string, object?>
+        var startInfo = new ProcessStartInfo
         {
-            ["manifest"] = new Dictionary<string, string>
-            {
-                ["url"] = "https://raw.githubusercontent.com/mtkennerly/ludusavi-manifest/master/data/manifest.yaml",
-            },
-            ["roots"] = roots
-                .Select(root => new Dictionary<string, string>
-                {
-                    ["path"] = ToYamlPath(root.Path),
-                    ["store"] = root.Store,
-                })
-                .ToList(),
-            ["backup"] = new Dictionary<string, string>
-            {
-                ["path"] = ToYamlPath(backupDirectory),
-            },
-            ["restore"] = new Dictionary<string, string>
-            {
-                ["path"] = ToYamlPath(backupDirectory),
-            },
+            FileName = ResolveDeckSyncExecutablePath(deckSyncDirectory, "ludusavi"),
+            WorkingDirectory = deckSyncDirectory,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
         };
+        startInfo.ArgumentList.Add("--config");
+        startInfo.ArgumentList.Add(configDirectory);
+        startInfo.ArgumentList.Add("config");
+        startInfo.ArgumentList.Add("show");
 
-        if (customBackupFiles is { Count: > 0 })
+        log?.Invoke($"  Running command: {FormatCommandLine(startInfo.FileName, startInfo.ArgumentList)}");
+
+        using var process = Process.Start(startInfo);
+        if (process is null)
         {
-            config["customGames"] = customBackupFiles.Select((filePath, index) => new Dictionary<string, object?>
-            {
-                ["name"] = $"Integration Test Fixture {index + 1}",
-                ["integration"] = "override",
-                ["files"] = new[] { ToYamlPath(filePath) },
-                ["registry"] = Array.Empty<string>(),
-                ["installDir"] = Array.Empty<string>(),
-            }).ToList();
+            throw new SetupInstallException(
+                SetupInstallError.WriteFailed,
+                "Failed to start the Ludusavi config seeding process.");
         }
 
-        var yaml = YamlSerializer.Serialize(config);
-        await File.WriteAllTextAsync(configPath, yaml.EndsWith(Environment.NewLine) ? yaml : yaml + Environment.NewLine, cancellationToken);
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+
+        await process.WaitForExitAsync(cancellationToken);
+
+        var yaml = await stdoutTask;
+        var stderr = await stderrTask;
+        if (process.ExitCode != 0)
+        {
+            throw new SetupInstallException(
+                SetupInstallError.WriteFailed,
+                $"Ludusavi config seeding failed with exit code {process.ExitCode}: {stderr.Trim()}");
+        }
+
+        yaml = ApplyLudusaviConfigOverrides(
+            yaml,
+            backupDirectory,
+            rcloneExecutable,
+            $"--config {ToYamlPath(rcloneConfigPath)}");
+
+        await File.WriteAllTextAsync(
+            configPath,
+            yaml.EndsWith(Environment.NewLine) ? yaml : yaml + Environment.NewLine,
+            cancellationToken);
         return roots.Count;
     }
 
-    private static async Task RunLudusaviBackupAsync(string deckSyncDirectory, CancellationToken cancellationToken)
+    private static async Task RunLudusaviBackupAsync(
+        string deckSyncDirectory,
+        Action<string>? log,
+        CancellationToken cancellationToken)
     {
         var configDirectory = Path.Combine(deckSyncDirectory, "config");
         var backupDirectory = ResolveDeckSyncBackupDirectory();
@@ -161,12 +174,15 @@ public static class DeckSyncSetupRuntime
             FileName = ludusaviExecutable,
             WorkingDirectory = deckSyncDirectory,
             UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
         };
-        startInfo.ArgumentList.Add("--no-manifest-update");
         startInfo.ArgumentList.Add("--config");
         startInfo.ArgumentList.Add(configDirectory);
         startInfo.ArgumentList.Add("backup");
         startInfo.ArgumentList.Add("--force");
+
+        log?.Invoke($"  Running command: {FormatCommandLine(startInfo.FileName, startInfo.ArgumentList)}");
 
         using var process = Process.Start(startInfo);
         if (process is null)
@@ -176,13 +192,33 @@ public static class DeckSyncSetupRuntime
                 "Failed to start the Ludusavi backup process.");
         }
 
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+
         await process.WaitForExitAsync(cancellationToken);
+
+        var stdout = await stdoutTask;
+        var stderr = await stderrTask;
+
+        if (!string.IsNullOrWhiteSpace(stdout))
+        {
+            foreach (var line in stdout.Replace("\r\n", "\n").Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                log?.Invoke($"  [ludusavi stdout] {line}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(stderr))
+        {
+            foreach (var line in stderr.Replace("\r\n", "\n").Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                log?.Invoke($"  [ludusavi stderr] {line}");
+        }
+
+        log?.Invoke($"  Ludusavi backup exited with code {process.ExitCode}.");
 
         if (process.ExitCode != 0)
         {
             throw new SetupInstallException(
                 SetupInstallError.WriteFailed,
-                $"Ludusavi backup failed with exit code {process.ExitCode}.");
+                $"Ludusavi backup failed with exit code {process.ExitCode}: {stderr.Trim()}");
         }
     }
 
@@ -231,4 +267,80 @@ public static class DeckSyncSetupRuntime
     }
 
     private static string ToYamlPath(string path) => path.Replace('\\', '/');
+
+    private static string FormatCommandLine(string fileName, IEnumerable<string> arguments) =>
+        string.Join(" ", new[] { QuoteCommandLineArgument(fileName) }.Concat(arguments.Select(QuoteCommandLineArgument)));
+
+    private static string QuoteCommandLineArgument(string argument)
+    {
+        if (argument.Length == 0 || argument.Any(char.IsWhiteSpace) || argument.Contains('"'))
+        {
+            return $"\"{argument.Replace("\"", "\\\"")}\"";
+        }
+
+        return argument;
+    }
+
+    private static string ApplyLudusaviConfigOverrides(
+        string yaml,
+        string backupDirectory,
+        string rcloneExecutable,
+        string rcloneArguments)
+    {
+        var lines = yaml.Replace("\r\n", "\n").Split('\n');
+        var updated = new List<string>(lines.Length);
+        string? topLevelSection = null;
+        string? nestedSection = null;
+
+        foreach (var line in lines)
+        {
+            if (line.Length == 0)
+            {
+                updated.Add(line);
+                continue;
+            }
+
+            var trimmed = line.TrimStart();
+            var indent = line.Length - trimmed.Length;
+
+            if (indent == 0)
+            {
+                topLevelSection = TryGetYamlKey(trimmed);
+                nestedSection = null;
+            }
+            else if (indent == 2)
+            {
+                nestedSection = TryGetYamlKey(trimmed);
+            }
+
+            if (indent == 2 && topLevelSection == "backup" && trimmed.StartsWith("path:"))
+            {
+                updated.Add($"{new string(' ', indent)}path: {ToYamlPath(backupDirectory)}");
+            }
+            else if (indent == 2 && topLevelSection == "restore" && trimmed.StartsWith("path:"))
+            {
+                updated.Add($"{new string(' ', indent)}path: {ToYamlPath(backupDirectory)}");
+            }
+            else if (indent == 4 && topLevelSection == "apps" && nestedSection == "rclone" && trimmed.StartsWith("path:"))
+            {
+                updated.Add($"{new string(' ', indent)}path: {ToYamlPath(rcloneExecutable)}");
+            }
+            else if (indent == 4 && topLevelSection == "apps" && nestedSection == "rclone" && trimmed.StartsWith("arguments:"))
+            {
+                updated.Add($"{new string(' ', indent)}arguments: {rcloneArguments}");
+            }
+            else
+            {
+                updated.Add(line);
+            }
+        }
+
+        return string.Join("\n", updated);
+    }
+
+    private static string? TryGetYamlKey(string line)
+    {
+        var separatorIndex = line.IndexOf(':');
+        return separatorIndex > 0 ? line[..separatorIndex] : null;
+    }
 }

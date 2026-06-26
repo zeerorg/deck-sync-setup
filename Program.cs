@@ -10,7 +10,6 @@ installCommand.SetAction(async (ParseResult _, CancellationToken cancellationTok
         await DeckSyncSetupRuntime.InstallAsync(
             DeckSyncRuntimeDirectory.Resolve(),
             DeckSyncSetupRuntime.ResolveDeckSyncBackupDirectory(),
-            null,
             Console.WriteLine,
             cancellationToken);
 
