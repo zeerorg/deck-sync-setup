@@ -1,37 +1,25 @@
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 
-/// <summary>
-/// HTTP adapter for <see cref="ISetupInstallGitHubPort"/>. Queries the GitHub Releases API
-/// for a configurable repository and streams asset downloads directly to the caller.
-/// </summary>
-public sealed class GitHubSetupInstallAdapter : ISetupInstallGitHubPort
+/// <summary>HTTP adapter for <see cref="IGitHubReleasePort"/>.</summary>
+internal sealed class GitHubReleaseHttpAdapter : IGitHubReleasePort
 {
     private readonly HttpClient _httpClient;
-    private readonly string _releasesUrl;
-
+    
     /// <param name="httpClient">
     /// An <see cref="HttpClient"/> preconfigured with the GitHub User-Agent and Accept headers.
     /// </param>
-    /// <param name="owner">The GitHub repository owner (e.g. <c>rclone</c>).</param>
-    /// <param name="repo">The GitHub repository name (e.g. <c>rclone</c>).</param>
-    public GitHubSetupInstallAdapter(HttpClient httpClient, string owner, string repo)
-    {
-        _httpClient = httpClient;
-        _releasesUrl = $"https://api.github.com/repos/{owner}/{repo}/releases?per_page=30";
-    }
+    public GitHubReleaseHttpAdapter(HttpClient httpClient) => _httpClient = httpClient;
 
     /// <inheritdoc/>
-    /// <remarks>
-    /// Fetches up to 30 releases from <c>GET /repos/rclone/rclone/releases</c>
-    /// and maps them to <see cref="GitHubReleaseSnapshot"/> instances.
-    /// Returns an empty list if the API returns no releases.
-    /// </remarks>
+    /// <remarks>Fetches up to 30 releases and maps them to snapshots.</remarks>
     public async Task<IReadOnlyList<GitHubReleaseSnapshot>> ListReleasesAsync(
+        GitHubRepositoryIdentity repository,
         CancellationToken cancellationToken = default)
     {
+        var releasesUrl = $"https://api.github.com/repos/{repository.Owner}/{repository.RepositoryName}/releases?per_page=30";
         var releases = await _httpClient.GetFromJsonAsync<List<ReleaseDto>>(
-            _releasesUrl,
+            releasesUrl,
             cancellationToken);
 
         if (releases is null || releases.Count == 0)

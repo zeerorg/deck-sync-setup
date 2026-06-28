@@ -1,17 +1,17 @@
 using System.CommandLine;
 
 var rootCommand = new RootCommand("Deck sync setup tool — installs or removes the Deck sync runtime on this machine.");
+var locationsModule = new DeckSyncLocationsModule();
+var progressReporter = new ConsoleSetupProgressReporter(Console.WriteLine);
+var installModule = new SetupInstallModule(locationsModule, progressReporter);
+var cleanupModule = new SetupCleanupModule(locationsModule, progressReporter);
 
 var installCommand = new Command("install", "Download and install the Deck sync runtime for this platform.");
 installCommand.SetAction(async (ParseResult _, CancellationToken cancellationToken) =>
 {
     try
     {
-        await DeckSyncSetupRuntime.InstallAsync(
-            DeckSyncRuntimeDirectory.Resolve(),
-            DeckSyncSetupRuntime.ResolveDeckSyncBackupDirectory(),
-            Console.WriteLine,
-            cancellationToken);
+        await installModule.InstallAsync(cancellationToken);
 
         return 0;
     }
@@ -27,7 +27,7 @@ cleanupCommand.SetAction(async (ParseResult _, CancellationToken cancellationTok
 {
     try
     {
-        await DeckSyncSetupRuntime.CleanupAsync(DeckSyncRuntimeDirectory.Resolve(), Console.WriteLine, cancellationToken);
+        await cleanupModule.CleanupAsync(cancellationToken);
         return 0;
     }
     catch (Exception ex)

@@ -29,14 +29,16 @@ public sealed class CleanupThenInstallTests
 
         try
         {
-            void Log(string message)
-            {
-                logMessages.Add(message);
-                _output.WriteLine(message);
-            }
+            var locationsModule = new TestDeckSyncLocationsModule(runtimeDirectory, backupDirectory);
+            var progressReporter = new RecordingSetupProgressReporter(_output.WriteLine, logMessages);
+            var cleanupModule = new SetupCleanupModule(locationsModule, progressReporter);
+            var installModule = new SetupInstallModule(locationsModule, progressReporter);
 
             _output.WriteLine("Running cleanup...");
-            await DeckSyncSetupRuntime.CleanupAsync(runtimeDirectory, Log);
+            var cleanupResult = await cleanupModule.CleanupAsync();
+            Assert.True(cleanupResult.RemovedRuntime);
+            Assert.Equal(runtimeDirectory, cleanupResult.DeckSyncRuntimeLocation.Path);
+            Assert.Equal(backupDirectory, cleanupResult.DeckSyncBackupLocation.Path);
             Assert.False(Directory.Exists(runtimeDirectory));
             Assert.True(Directory.Exists(backupDirectory));
             Assert.True(File.Exists(Path.Combine(backupDirectory, "keep-me.txt")));
@@ -46,7 +48,11 @@ public sealed class CleanupThenInstallTests
                 .ToArray();
 
             _output.WriteLine("Running install...");
-            await DeckSyncSetupRuntime.InstallAsync(runtimeDirectory, backupDirectory, Log);
+            var installResult = await installModule.InstallAsync();
+            Assert.Equal(runtimeDirectory, installResult.DeckSyncRuntimeLocation.Path);
+            Assert.Equal(backupDirectory, installResult.DeckSyncBackupLocation.Path);
+            Assert.Equal(3, installResult.InstalledTools.Count);
+            Assert.Equal(["rclone", "syncthing", "ludusavi"], installResult.InstalledTools.Select(tool => tool.ToolName));
             Assert.True(Directory.Exists(runtimeDirectory));
 
             var configPath = Path.Combine(runtimeDirectory, "config", "config.yaml");
@@ -94,6 +100,71 @@ public sealed class CleanupThenInstallTests
                 Directory.Delete(backupDirectory, recursive: true);
             if (Directory.Exists(homeDirectory))
                 Directory.Delete(homeDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Cleanup_when_runtime_is_missing_is_a_successful_no_op()
+    {
+        var homeDirectory = Path.Combine(Path.GetTempPath(), "deck-sync-setup-it", Guid.NewGuid().ToString("N"));
+        var runtimeDirectory = Path.Combine(homeDirectory, ".deck-sync");
+        var backupDirectory = Path.Combine(homeDirectory, ".deck-sync-backup");
+        var logMessages = new List<string>();
+
+        try
+        {
+            var locationsModule = new TestDeckSyncLocationsModule(runtimeDirectory, backupDirectory);
+            var progressReporter = new RecordingSetupProgressReporter(_output.WriteLine, logMessages);
+            var cleanupModule = new SetupCleanupModule(locationsModule, progressReporter);
+
+            var cleanupResult = await cleanupModule.CleanupAsync();
+
+            Assert.False(cleanupResult.RemovedRuntime);
+            Assert.Equal(runtimeDirectory, cleanupResult.DeckSyncRuntimeLocation.Path);
+            Assert.Equal(backupDirectory, cleanupResult.DeckSyncBackupLocation.Path);
+            Assert.Contains(logMessages, message => message.Contains("Nothing to delete"));
+            Assert.False(Directory.Exists(runtimeDirectory));
+        }
+        finally
+        {
+            if (Directory.Exists(backupDirectory))
+                Directory.Delete(backupDirectory, recursive: true);
+            if (Directory.Exists(homeDirectory))
+                Directory.Delete(homeDirectory, recursive: true);
+        }
+    }
+
+    private sealed class TestDeckSyncLocationsModule : IDeckSyncLocationsModule
+    {
+        private readonly DeckSyncRuntimeLocation _runtimeLocation;
+        private readonly DeckSyncBackupLocation _backupLocation;
+
+        public TestDeckSyncLocationsModule(string runtimeDirectory, string backupDirectory)
+        {
+            _runtimeLocation = new DeckSyncRuntimeLocation(runtimeDirectory);
+            _backupLocation = new DeckSyncBackupLocation(backupDirectory);
+        }
+
+        public DeckSyncRuntimeLocation ResolveRuntimeLocation() => _runtimeLocation;
+
+        public DeckSyncBackupLocation ResolveBackupLocation() => _backupLocation;
+    }
+
+    private sealed class RecordingSetupProgressReporter : ISetupProgressReporter
+    {
+        private readonly Action<string> _writeLine;
+        private readonly List<string> _messages;
+
+        public RecordingSetupProgressReporter(Action<string> writeLine, List<string> messages)
+        {
+            _writeLine = writeLine;
+            _messages = messages;
+        }
+
+        public void Report(SetupProgress progress)
+        {
+            _messages.Add(progress.Message);
+            _writeLine(progress.Message);
         }
     }
 }

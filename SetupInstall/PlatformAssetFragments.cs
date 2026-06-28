@@ -1,10 +1,11 @@
 using System.Runtime.InteropServices;
 
 /// <summary>
-/// Platform-specific asset name fragments used by the Setup Install module to
-/// identify the correct archive asset for the current host. Each property holds
-/// an array of name fragments in descending preference order — the module picks
-/// the first release asset whose name contains any fragment from the array.
+/// Platform-specific asset name fragments used by the release asset install
+/// module to identify the correct archive asset for the current host. Each
+/// property holds an array of name fragments in descending preference order —
+/// the module picks the first release asset whose name contains any fragment
+/// from the array.
 /// </summary>
 /// <param name="WindowsX64">Fragments for Windows on x64 (e.g. <c>["windows-amd64"]</c>).</param>
 /// <param name="WindowsArm64">Fragments for Windows on ARM64 (e.g. <c>["windows-arm64", "windows-amd64"]</c>).</param>

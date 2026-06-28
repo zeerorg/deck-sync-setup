@@ -15,3 +15,7 @@ _Avoid_: installer service, install handler, install pipeline
 **Setup Cleanup module**:
 The module that removes deck sync runtime files from the host.
 _Avoid_: cleanup service, cleanup handler, delete command
+
+**Deck sync locations module**:
+The module that resolves the deck sync runtime location and the backup location used by install, cleanup, and future flows.
+_Avoid_: runtime directory module, environment path module
