@@ -7,6 +7,8 @@ public sealed class SetupInstallModule : ISetupInstallModule
 {
     private readonly IDeckSyncLocationsModule _locationsModule;
     private readonly ISetupProgressReporter _progressReporter;
+    private readonly IReleaseAssetInstallModule? _releaseAssetInstallModule;
+    private readonly ILudusaviProcessPort? _ludusaviProcessPort;
 
     /// <param name="locationsModule">Resolves the runtime and backup locations.</param>
     /// <param name="progressReporter">Receives structured progress messages.</param>
@@ -16,6 +18,18 @@ public sealed class SetupInstallModule : ISetupInstallModule
     {
         _locationsModule = locationsModule;
         _progressReporter = progressReporter;
+    }
+
+    internal SetupInstallModule(
+        IDeckSyncLocationsModule locationsModule,
+        ISetupProgressReporter progressReporter,
+        IReleaseAssetInstallModule releaseAssetInstallModule,
+        ILudusaviProcessPort ludusaviProcessPort)
+    {
+        _locationsModule = locationsModule;
+        _progressReporter = progressReporter;
+        _releaseAssetInstallModule = releaseAssetInstallModule;
+        _ludusaviProcessPort = ludusaviProcessPort;
     }
 
     /// <inheritdoc/>
@@ -43,72 +57,85 @@ public sealed class SetupInstallModule : ISetupInstallModule
                 $"The Deck sync runtime directory already exists at '{runtimeLocation.Path}'. Please run `deck-sync-setup cleanup` before installing again.");
         }
 
-        using var httpClient = CreateGitHubClient();
-        var releaseAssetInstallModule = new ReleaseAssetInstallModule(
-            new GitHubReleaseHttpAdapter(httpClient),
-            new ArchiveExtractionModule());
-        var ludusaviProcessPort = new LudusaviProcessAdapter();
-
-        var installedTools = new List<SetupInstallToolResult>();
-        var toolRequests = new[]
+        HttpClient? httpClient = null;
+        var releaseAssetInstallModule = _releaseAssetInstallModule;
+        if (releaseAssetInstallModule is null)
         {
-            new ReleaseAssetInstallRequest(
-                ToolName: "rclone",
-                Repository: new GitHubRepositoryIdentity("rclone", "rclone"),
-                PlatformFragments: PlatformAssetFragments.Rclone,
-                DeckSyncRuntimeLocation: runtimeLocation),
-            new ReleaseAssetInstallRequest(
-                ToolName: "syncthing",
-                Repository: new GitHubRepositoryIdentity("syncthing", "syncthing"),
-                PlatformFragments: PlatformAssetFragments.Syncthing,
-                DeckSyncRuntimeLocation: runtimeLocation),
-            new ReleaseAssetInstallRequest(
-                ToolName: "ludusavi",
-                Repository: new GitHubRepositoryIdentity("mtkennerly", "ludusavi"),
-                PlatformFragments: PlatformAssetFragments.Ludusavi,
-                DeckSyncRuntimeLocation: runtimeLocation),
-        };
+            httpClient = CreateGitHubClient();
+            releaseAssetInstallModule = new ReleaseAssetInstallModule(
+                new GitHubReleaseHttpAdapter(httpClient),
+                new ArchiveExtractionModule());
+        }
 
-        foreach (var request in toolRequests)
+        var ludusaviProcessPort = _ludusaviProcessPort ?? new LudusaviProcessAdapter();
+
+        try
         {
-            installedTools.Add(await InstallReleaseAssetWithRollbackAsync(
-                releaseAssetInstallModule,
-                request,
+            var installedTools = new List<SetupInstallToolResult>();
+            var toolRequests = new[]
+            {
+                new ReleaseAssetInstallRequest(
+                    ToolName: "rclone",
+                    Repository: new GitHubRepositoryIdentity("rclone", "rclone"),
+                    PlatformFragments: PlatformAssetFragments.Rclone,
+                    DeckSyncRuntimeLocation: runtimeLocation),
+                new ReleaseAssetInstallRequest(
+                    ToolName: "syncthing",
+                    Repository: new GitHubRepositoryIdentity("syncthing", "syncthing"),
+                    PlatformFragments: PlatformAssetFragments.Syncthing,
+                    DeckSyncRuntimeLocation: runtimeLocation),
+                new ReleaseAssetInstallRequest(
+                    ToolName: "ludusavi",
+                    Repository: new GitHubRepositoryIdentity("mtkennerly", "ludusavi"),
+                    PlatformFragments: PlatformAssetFragments.Ludusavi,
+                    DeckSyncRuntimeLocation: runtimeLocation),
+            };
+
+            foreach (var request in toolRequests)
+            {
+                installedTools.Add(await InstallReleaseAssetWithRollbackAsync(
+                    releaseAssetInstallModule,
+                    request,
+                    runtimeLocation,
+                    cancellationToken));
+            }
+
+            _progressReporter.Report(new SetupProgress(SetupProgressKind.Info, "Seeding Ludusavi config..."));
+            var configuredRoots = await RunWithRollbackAsync(
+                () => SeedLudusaviConfigAsync(
+                    ludusaviProcessPort,
+                    runtimeLocation.Path,
+                    backupLocation.Path,
+                    cancellationToken),
                 runtimeLocation,
-                cancellationToken));
+                SetupInstallError.LudusaviConfigSeedingFailed,
+                "Failed to seed the Ludusavi config.",
+                cancellationToken);
+
+            if (configuredRoots == 0)
+            {
+                _progressReporter.Report(new SetupProgress(SetupProgressKind.Warning, "  Warning: No Steam library root was auto-detected, so Ludusavi may find zero saves."));
+                _progressReporter.Report(new SetupProgress(SetupProgressKind.Warning, "  You can add roots later in .deck-sync/config/config.yaml under `roots`."));
+            }
+
+            _progressReporter.Report(new SetupProgress(SetupProgressKind.Info, "Running Ludusavi backup..."));
+            await RunWithRollbackAsync(
+                () => RunLudusaviBackupAsync(
+                    ludusaviProcessPort,
+                    runtimeLocation.Path,
+                    cancellationToken),
+                runtimeLocation,
+                SetupInstallError.LudusaviBackupFailed,
+                "Failed to run the initial Ludusavi backup.",
+                cancellationToken);
+            _progressReporter.Report(new SetupProgress(SetupProgressKind.Info, "  Ludusavi backup completed."));
+
+            return new SetupInstallResult(runtimeLocation, backupLocation, installedTools);
         }
-
-        _progressReporter.Report(new SetupProgress(SetupProgressKind.Info, "Seeding Ludusavi config..."));
-        var configuredRoots = await RunWithRollbackAsync(
-            () => SeedLudusaviConfigAsync(
-                ludusaviProcessPort,
-                runtimeLocation.Path,
-                backupLocation.Path,
-                cancellationToken),
-            runtimeLocation,
-            SetupInstallError.LudusaviConfigSeedingFailed,
-            "Failed to seed the Ludusavi config.",
-            cancellationToken);
-
-        if (configuredRoots == 0)
+        finally
         {
-            _progressReporter.Report(new SetupProgress(SetupProgressKind.Warning, "  Warning: No Steam library root was auto-detected, so Ludusavi may find zero saves."));
-            _progressReporter.Report(new SetupProgress(SetupProgressKind.Warning, "  You can add roots later in .deck-sync/config/config.yaml under `roots`."));
+            httpClient?.Dispose();
         }
-
-        _progressReporter.Report(new SetupProgress(SetupProgressKind.Info, "Running Ludusavi backup..."));
-        await RunWithRollbackAsync(
-            () => RunLudusaviBackupAsync(
-                ludusaviProcessPort,
-                runtimeLocation.Path,
-                cancellationToken),
-            runtimeLocation,
-            SetupInstallError.LudusaviBackupFailed,
-            "Failed to run the initial Ludusavi backup.",
-            cancellationToken);
-        _progressReporter.Report(new SetupProgress(SetupProgressKind.Info, "  Ludusavi backup completed."));
-
-        return new SetupInstallResult(runtimeLocation, backupLocation, installedTools);
     }
 
     private async Task<SetupInstallToolResult> InstallReleaseAssetWithRollbackAsync(

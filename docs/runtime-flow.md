@@ -20,4 +20,6 @@ Cleanup resolves the same locations and deletes the runtime directory if it exis
 
 ## Testing
 
-Integration tests should cross the public seams. The current integration coverage exercises cleanup followed by install, plus the missing-runtime cleanup no-op.
+Default integration tests cross the public Setup Install module, Setup Cleanup module, Deck sync locations module, and CLI command seams while replacing live GitHub downloads and Ludusavi process execution with internal fakes. This keeps normal test runs hermetic while still using real isolated filesystem locations for the Deck sync runtime and backup data.
+
+The live cleanup-then-install smoke test is skipped by default. Set `DECK_SYNC_SETUP_LIVE_TESTS=1` when you intentionally want to verify real release downloads and real Ludusavi execution.
