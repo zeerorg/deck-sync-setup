@@ -1,18 +1,3 @@
-/// <summary>Deep orchestration module that installs and seeds the Deck sync runtime.</summary>
-public interface ISetupInstallModule
-{
-    /// <summary>Installs the Deck sync runtime and seeds Ludusavi for the current host.</summary>
-    /// <returns>Details of what was installed and where.</returns>
-    /// <exception cref="SetupInstallException">
-    /// Thrown when installation fails for a known reason.
-    /// Inspect <see cref="SetupInstallException.Code"/> for the failure category.
-    /// </exception>
-    /// <exception cref="OperationCanceledException">
-    /// Thrown when <paramref name="cancellationToken"/> is cancelled.
-    /// </exception>
-    Task<SetupInstallResult> InstallAsync(CancellationToken cancellationToken = default);
-}
-
 /// <summary>Details of an installed release asset.</summary>
 /// <param name="ToolName">The tool that was installed (for example, <c>rclone</c>).</param>
 /// <param name="ReleaseTag">The release tag from which the asset was downloaded.</param>

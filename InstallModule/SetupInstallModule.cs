@@ -2,7 +2,22 @@ using System.Diagnostics;
 using System.Net.Http.Headers;
 using Microsoft.Win32;
 
-/// <summary>Deep orchestration module that installs the Deck sync runtime.</summary>
+/// <summary>Deep orchestration module that installs and seeds the Deck sync runtime.</summary>
+public interface ISetupInstallModule
+{
+    /// <summary>Installs the Deck sync runtime and seeds Ludusavi for the current host.</summary>
+    /// <returns>Details of what was installed and where.</returns>
+    /// <exception cref="SetupInstallException">
+    /// Thrown when installation fails for a known reason.
+    /// Inspect <see cref="SetupInstallException.Code"/> for the failure category.
+    /// </exception>
+    /// <exception cref="OperationCanceledException">
+    /// Thrown when <paramref name="cancellationToken"/> is cancelled.
+    /// </exception>
+    Task<SetupInstallResult> InstallAsync(CancellationToken cancellationToken = default);
+}
+
+/// <inheritdoc/>
 public sealed class SetupInstallModule : ISetupInstallModule
 {
     private readonly IDeckSyncLocationsModule _locationsModule;
