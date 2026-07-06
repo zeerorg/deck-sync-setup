@@ -12,7 +12,7 @@ Public modules report structured progress through `ISetupProgressReporter`. Use 
 
 ## Install flow
 
-The install module resolves locations, rejects an existing runtime, installs rclone, syncthing, and Ludusavi, patches Ludusavi config, and then runs the initial backup. Partial failures roll back the runtime directory best-effort.
+The install module resolves locations, rejects an existing runtime, installs rclone, syncthing, and Ludusavi, patches Ludusavi config, runs the initial backup, and then runs `rclone --config <runtime>/rclone.conf config create gdrive drive scope=drive config_is_local=true` to open Google Drive login for Rclone setup. Partial failures roll back the runtime directory best-effort.
 
 ## Cleanup flow
 

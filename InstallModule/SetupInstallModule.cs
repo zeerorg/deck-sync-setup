@@ -24,6 +24,7 @@ public sealed class SetupInstallModule : ISetupInstallModule
     private readonly ISetupProgressReporter _progressReporter;
     private readonly IReleaseAssetInstallModule? _releaseAssetInstallModule;
     private readonly ILudusaviProcessPort? _ludusaviProcessPort;
+    private readonly IRcloneProcessPort? _rcloneProcessPort;
 
     /// <param name="locationsModule">Resolves the runtime and backup locations.</param>
     /// <param name="progressReporter">Receives structured progress messages.</param>
@@ -39,12 +40,14 @@ public sealed class SetupInstallModule : ISetupInstallModule
         IDeckSyncLocationsModule locationsModule,
         ISetupProgressReporter progressReporter,
         IReleaseAssetInstallModule releaseAssetInstallModule,
-        ILudusaviProcessPort ludusaviProcessPort)
+        ILudusaviProcessPort ludusaviProcessPort,
+        IRcloneProcessPort rcloneProcessPort)
     {
         _locationsModule = locationsModule;
         _progressReporter = progressReporter;
         _releaseAssetInstallModule = releaseAssetInstallModule;
         _ludusaviProcessPort = ludusaviProcessPort;
+        _rcloneProcessPort = rcloneProcessPort;
     }
 
     /// <inheritdoc/>
@@ -83,6 +86,7 @@ public sealed class SetupInstallModule : ISetupInstallModule
         }
 
         var ludusaviProcessPort = _ludusaviProcessPort ?? new LudusaviProcessAdapter();
+        var rcloneProcessPort = _rcloneProcessPort ?? new RcloneProcessAdapter();
 
         try
         {
@@ -144,6 +148,18 @@ public sealed class SetupInstallModule : ISetupInstallModule
                 "Failed to run the initial Ludusavi backup.",
                 cancellationToken);
             _progressReporter.Report(new SetupProgress(SetupProgressKind.Info, "  Ludusavi backup completed."));
+
+            _progressReporter.Report(new SetupProgress(SetupProgressKind.Info, "Opening Google Drive login page for Rclone setup..."));
+            await RunWithRollbackAsync(
+                () => RunRcloneGoogleDriveSetupAsync(
+                    rcloneProcessPort,
+                    runtimeLocation.Path,
+                    cancellationToken),
+                runtimeLocation,
+                SetupInstallError.RcloneGoogleDriveSetupFailed,
+                "Failed to set up the Rclone Google Drive remote.",
+                cancellationToken);
+            _progressReporter.Report(new SetupProgress(SetupProgressKind.Info, "  Rclone Google Drive setup completed."));
 
             return new SetupInstallResult(runtimeLocation, backupLocation, installedTools);
         }
@@ -336,6 +352,43 @@ public sealed class SetupInstallModule : ISetupInstallModule
         }
     }
 
+    private async Task RunRcloneGoogleDriveSetupAsync(
+        IRcloneProcessPort rcloneProcessPort,
+        string deckSyncDirectory,
+        CancellationToken cancellationToken)
+    {
+        var rcloneExecutable = ResolveDeckSyncExecutablePath(deckSyncDirectory, "rclone");
+        var rcloneConfigPath = Path.Combine(deckSyncDirectory, "rclone.conf");
+        var arguments = CreateRcloneGoogleDriveSetupArguments(rcloneConfigPath);
+        _progressReporter.Report(new SetupProgress(SetupProgressKind.Info, $"  Running command: {FormatCommandLine(rcloneExecutable, arguments)}"));
+
+        var result = await rcloneProcessPort.CreateGoogleDriveRemoteAsync(
+            rcloneExecutable,
+            deckSyncDirectory,
+            rcloneConfigPath,
+            cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(result.StandardOutput))
+        {
+            foreach (var line in result.StandardOutput.Replace("\r\n", "\n").Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                _progressReporter.Report(new SetupProgress(SetupProgressKind.Info, $"  [rclone stdout] {line}"));
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.StandardError))
+        {
+            foreach (var line in result.StandardError.Replace("\r\n", "\n").Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                _progressReporter.Report(new SetupProgress(SetupProgressKind.Info, $"  [rclone stderr] {line}"));
+        }
+
+        _progressReporter.Report(new SetupProgress(SetupProgressKind.Info, $"  Rclone setup exited with code {result.ExitCode}."));
+
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"Rclone Google Drive setup failed with exit code {result.ExitCode}: {result.StandardError.Trim()}");
+        }
+    }
+
     private static HttpClient CreateGitHubClient()
     {
         var client = new HttpClient();
@@ -408,6 +461,9 @@ public sealed class SetupInstallModule : ISetupInstallModule
 
     private static string[] CreateLudusaviBackupArguments(string configDirectory) =>
         ["--config", configDirectory, "backup", "--force"];
+
+    private static string[] CreateRcloneGoogleDriveSetupArguments(string rcloneConfigPath) =>
+        ["--config", rcloneConfigPath, "config", "create", "gdrive", "drive", "scope=drive", "config_is_local=true"];
 
     private static string ApplyLudusaviConfigOverrides(
         string yaml,

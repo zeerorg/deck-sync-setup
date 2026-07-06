@@ -57,6 +57,9 @@ public enum SetupInstallError
     /// <summary>Running the initial Ludusavi backup failed.</summary>
     LudusaviBackupFailed,
 
+    /// <summary>Creating the Rclone Google Drive remote failed.</summary>
+    RcloneGoogleDriveSetupFailed,
+
     /// <summary>Rollback of a partial install failed.</summary>
     RollbackFailed,
 }

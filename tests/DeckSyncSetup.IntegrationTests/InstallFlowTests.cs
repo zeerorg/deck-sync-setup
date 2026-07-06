@@ -17,11 +17,16 @@ public sealed class InstallFlowTests
             ShowConfigResult = FakeLudusaviProcessPort.SuccessfulConfigShowResult(),
             BackupResult = FakeLudusaviProcessPort.SuccessfulBackupResult(),
         };
+        var rclone = new FakeRcloneProcessPort
+        {
+            CreateGoogleDriveRemoteResult = FakeRcloneProcessPort.SuccessfulCreateGoogleDriveRemoteResult(),
+        };
         var installModule = new SetupInstallModule(
             context.LocationsModule,
             context.ProgressReporter,
             releaseAssets,
-            ludusavi);
+            ludusavi,
+            rclone);
 
         var result = await installModule.InstallAsync();
 
@@ -49,12 +54,18 @@ public sealed class InstallFlowTests
             configText);
         Assert.Single(ludusavi.ShowConfigCalls);
         Assert.Single(ludusavi.BackupCalls);
+        Assert.Single(rclone.CreateGoogleDriveRemoteCalls);
         Assert.Equal(Path.Combine(context.RuntimeDirectory, TestPaths.ToolExecutableName("ludusavi")), ludusavi.ShowConfigCalls[0].ExecutablePath);
         Assert.Equal(Path.Combine(context.RuntimeDirectory, TestPaths.ToolExecutableName("ludusavi")), ludusavi.BackupCalls[0].ExecutablePath);
+        Assert.Equal(Path.Combine(context.RuntimeDirectory, TestPaths.ToolExecutableName("rclone")), rclone.CreateGoogleDriveRemoteCalls[0].ExecutablePath);
+        Assert.Equal(Path.Combine(context.RuntimeDirectory, "rclone.conf"), rclone.CreateGoogleDriveRemoteCalls[0].ConfigPath);
         Assert.Contains(context.LogMessages, message => message.Contains("config show"));
         Assert.Contains(context.LogMessages, message => message.Contains("backup --force"));
+        Assert.Contains(context.LogMessages, message => message.Contains("config create gdrive drive scope=drive config_is_local=true"));
         Assert.Contains(context.LogMessages, message => message.Contains("Ludusavi backup exited with code 0"));
         Assert.Contains(context.LogMessages, message => message.Contains("Ludusavi backup completed"));
+        Assert.Contains(context.LogMessages, message => message.Contains("Rclone setup exited with code 0"));
+        Assert.Contains(context.LogMessages, message => message.Contains("Rclone Google Drive setup completed"));
     }
 
     [Fact]
@@ -73,11 +84,16 @@ public sealed class InstallFlowTests
             ShowConfigResult = FakeLudusaviProcessPort.SuccessfulConfigShowResult(),
             BackupResult = FakeLudusaviProcessPort.SuccessfulBackupResult(),
         };
+        var rclone = new FakeRcloneProcessPort
+        {
+            CreateGoogleDriveRemoteResult = FakeRcloneProcessPort.SuccessfulCreateGoogleDriveRemoteResult(),
+        };
         var installModule = new SetupInstallModule(
             context.LocationsModule,
             context.ProgressReporter,
             releaseAssets,
-            ludusavi);
+            ludusavi,
+            rclone);
 
         var cleanupResult = await cleanupModule.CleanupAsync();
         var installResult = await installModule.InstallAsync();
@@ -93,6 +109,7 @@ public sealed class InstallFlowTests
         Assert.Equal(["rclone", "syncthing", "ludusavi"], releaseAssets.Requests.Select(request => request.ToolName));
         Assert.Single(ludusavi.ShowConfigCalls);
         Assert.Single(ludusavi.BackupCalls);
+        Assert.Single(rclone.CreateGoogleDriveRemoteCalls);
     }
 
     [Fact]
@@ -102,17 +119,20 @@ public sealed class InstallFlowTests
         Directory.CreateDirectory(context.RuntimeDirectory);
         var releaseAssets = new FakeReleaseAssetInstallModule();
         var ludusavi = new FakeLudusaviProcessPort();
+        var rclone = new FakeRcloneProcessPort();
         var installModule = new SetupInstallModule(
             context.LocationsModule,
             context.ProgressReporter,
             releaseAssets,
-            ludusavi);
+            ludusavi,
+            rclone);
 
         var exception = await Assert.ThrowsAsync<SetupInstallException>(() => installModule.InstallAsync());
 
         Assert.Equal(SetupInstallError.DeckSyncRuntimeAlreadyExists, exception.Code);
         Assert.Empty(releaseAssets.Requests);
         Assert.Empty(ludusavi.ShowConfigCalls);
+        Assert.Empty(rclone.CreateGoogleDriveRemoteCalls);
         Assert.True(Directory.Exists(context.RuntimeDirectory));
     }
 
@@ -129,11 +149,13 @@ public sealed class InstallFlowTests
             ShowConfigResult = FakeLudusaviProcessPort.SuccessfulConfigShowResult(),
             BackupResult = new LudusaviProcessResult(42, "", "backup failed"),
         };
+        var rclone = new FakeRcloneProcessPort();
         var installModule = new SetupInstallModule(
             context.LocationsModule,
             context.ProgressReporter,
             releaseAssets,
-            ludusavi);
+            ludusavi,
+            rclone);
 
         var exception = await Assert.ThrowsAsync<SetupInstallException>(() => installModule.InstallAsync());
 
@@ -141,7 +163,43 @@ public sealed class InstallFlowTests
         Assert.False(Directory.Exists(context.RuntimeDirectory));
         Assert.True(Directory.Exists(context.BackupDirectory));
         Assert.True(File.Exists(backupSentinelPath));
+        Assert.Empty(rclone.CreateGoogleDriveRemoteCalls);
         Assert.Contains(context.LogMessages, message => message.Contains("Ludusavi backup exited with code 42"));
+        Assert.Contains(context.LogMessages, message => message.Contains("Rolled back partial Deck sync runtime"));
+    }
+
+    [Fact]
+    public async Task Failed_rclone_google_drive_setup_rolls_back_deck_sync_runtime_and_preserves_backup_data()
+    {
+        using var context = new DeckSyncTestContext(_output);
+        Directory.CreateDirectory(context.BackupDirectory);
+        var backupSentinelPath = Path.Combine(context.BackupDirectory, "keep-me.txt");
+        await File.WriteAllTextAsync(backupSentinelPath, "keep me");
+        var releaseAssets = new FakeReleaseAssetInstallModule();
+        var ludusavi = new FakeLudusaviProcessPort
+        {
+            ShowConfigResult = FakeLudusaviProcessPort.SuccessfulConfigShowResult(),
+            BackupResult = FakeLudusaviProcessPort.SuccessfulBackupResult(),
+        };
+        var rclone = new FakeRcloneProcessPort
+        {
+            CreateGoogleDriveRemoteResult = new RcloneProcessResult(43, "", "rclone failed"),
+        };
+        var installModule = new SetupInstallModule(
+            context.LocationsModule,
+            context.ProgressReporter,
+            releaseAssets,
+            ludusavi,
+            rclone);
+
+        var exception = await Assert.ThrowsAsync<SetupInstallException>(() => installModule.InstallAsync());
+
+        Assert.Equal(SetupInstallError.RcloneGoogleDriveSetupFailed, exception.Code);
+        Assert.False(Directory.Exists(context.RuntimeDirectory));
+        Assert.True(Directory.Exists(context.BackupDirectory));
+        Assert.True(File.Exists(backupSentinelPath));
+        Assert.Single(rclone.CreateGoogleDriveRemoteCalls);
+        Assert.Contains(context.LogMessages, message => message.Contains("Rclone setup exited with code 43"));
         Assert.Contains(context.LogMessages, message => message.Contains("Rolled back partial Deck sync runtime"));
     }
 }

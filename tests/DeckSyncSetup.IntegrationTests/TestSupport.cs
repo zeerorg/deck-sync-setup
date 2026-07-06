@@ -148,6 +148,30 @@ internal sealed record LudusaviProcessCall(
     string WorkingDirectory,
     string ConfigDirectory);
 
+internal sealed class FakeRcloneProcessPort : IRcloneProcessPort
+{
+    public RcloneProcessResult? CreateGoogleDriveRemoteResult { get; set; }
+
+    public List<RcloneProcessCall> CreateGoogleDriveRemoteCalls { get; } = [];
+
+    public static RcloneProcessResult SuccessfulCreateGoogleDriveRemoteResult() => new(0, "rclone ok", "");
+
+    public Task<RcloneProcessResult> CreateGoogleDriveRemoteAsync(
+        string executablePath,
+        string workingDirectory,
+        string configPath,
+        CancellationToken cancellationToken = default)
+    {
+        CreateGoogleDriveRemoteCalls.Add(new RcloneProcessCall(executablePath, workingDirectory, configPath));
+        return Task.FromResult(CreateGoogleDriveRemoteResult ?? throw new InvalidOperationException("Fake Rclone Google Drive setup result was not configured."));
+    }
+}
+
+internal sealed record RcloneProcessCall(
+    string ExecutablePath,
+    string WorkingDirectory,
+    string ConfigPath);
+
 internal sealed class FakeSetupInstallModule : ISetupInstallModule
 {
     private readonly Exception? _exception;

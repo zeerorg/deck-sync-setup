@@ -70,8 +70,8 @@ internal sealed class LudusaviProcessAdapter : ILudusaviProcessPort
             throw new InvalidOperationException($"Failed to start the Ludusavi process at '{executablePath}'.");
         }
 
-        var stdoutTask = process.StandardOutput.ReadToEndAsync();
-        var stderrTask = process.StandardError.ReadToEndAsync();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
 
         await process.WaitForExitAsync(cancellationToken);
 
