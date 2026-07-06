@@ -473,8 +473,10 @@ public sealed class SetupInstallModule : ISetupInstallModule
     {
         var lines = yaml.Replace("\r\n", "\n").Split('\n');
         var updated = new List<string>(lines.Length);
+        var backupHasIgnoredGames = YamlSectionContainsKey(lines, "backup", "ignoredGames");
         string? topLevelSection = null;
         string? nestedSection = null;
+        var skipCloudRemoteChildren = false;
 
         foreach (var line in lines)
         {
@@ -486,6 +488,14 @@ public sealed class SetupInstallModule : ISetupInstallModule
 
             var trimmed = line.TrimStart();
             var indent = line.Length - trimmed.Length;
+
+            if (skipCloudRemoteChildren)
+            {
+                if (indent > 2)
+                    continue;
+
+                skipCloudRemoteChildren = false;
+            }
 
             if (indent == 0)
             {
@@ -500,10 +510,20 @@ public sealed class SetupInstallModule : ISetupInstallModule
             if (indent == 2 && topLevelSection == "backup" && trimmed.StartsWith("path:"))
             {
                 updated.Add($"{new string(' ', indent)}path: {ToYamlPath(backupDirectory)}");
+                if (!backupHasIgnoredGames)
+                {
+                    updated.Add($"{new string(' ', indent)}ignoredGames: []");
+                    backupHasIgnoredGames = true;
+                }
             }
             else if (indent == 2 && topLevelSection == "restore" && trimmed.StartsWith("path:"))
             {
                 updated.Add($"{new string(' ', indent)}path: {ToYamlPath(backupDirectory)}");
+            }
+            else if (indent == 2 && topLevelSection == "cloud" && trimmed.StartsWith("remote:"))
+            {
+                updated.Add($"{new string(' ', indent)}remote: ~");
+                skipCloudRemoteChildren = true;
             }
             else if (indent == 4 && topLevelSection == "apps" && nestedSection == "rclone" && trimmed.StartsWith("path:"))
             {
@@ -520,6 +540,31 @@ public sealed class SetupInstallModule : ISetupInstallModule
         }
 
         return string.Join("\n", updated);
+    }
+
+    private static bool YamlSectionContainsKey(string[] lines, string section, string key)
+    {
+        var inSection = false;
+
+        foreach (var line in lines)
+        {
+            if (line.Length == 0)
+                continue;
+
+            var trimmed = line.TrimStart();
+            var indent = line.Length - trimmed.Length;
+
+            if (indent == 0)
+            {
+                inSection = TryGetYamlKey(trimmed) == section;
+                continue;
+            }
+
+            if (inSection && indent == 2 && TryGetYamlKey(trimmed) == key)
+                return true;
+        }
+
+        return false;
     }
 
     private static string? TryGetYamlKey(string line)

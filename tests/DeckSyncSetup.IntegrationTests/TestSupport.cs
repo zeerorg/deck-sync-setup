@@ -113,10 +113,16 @@ internal sealed class FakeLudusaviProcessPort : ILudusaviProcessPort
           path: old-backup
         restore:
           path: old-restore
+        cloud:
+          remote:
+            Custom:
+              id: ludusavi
+          path: ludusavi-backup
+          synchronize: true
         apps:
           rclone:
-            path: old-rclone
-            arguments: old-arguments
+            path: "C:\\Users\\rggup\\.deck-sync\\rclone.exe"
+            arguments: "--config=C:/Users/rggup/.deck-sync/rclone.conf --fast-list --ignore-checksum"
         """,
         "");
 

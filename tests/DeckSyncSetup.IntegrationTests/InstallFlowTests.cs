@@ -48,7 +48,10 @@ public sealed class InstallFlowTests
         var expectedRcloneConfig = TestPaths.YamlPath(Path.Combine(context.RuntimeDirectory, "rclone.conf"));
 
         Assert.Contains($"backup:\n  path: {expectedBackupPath}", configText);
+        Assert.Contains($"backup:\n  path: {expectedBackupPath}\n  ignoredGames: []", configText);
         Assert.Contains($"restore:\n  path: {expectedBackupPath}", configText);
+        Assert.Contains("cloud:\n  remote: ~\n  path: ludusavi-backup\n  synchronize: true", configText);
+        Assert.DoesNotContain("Custom:", configText);
         Assert.Contains(
             $"apps:\n  rclone:\n    path: {expectedRclonePath}\n    arguments: --config {expectedRcloneConfig}",
             configText);
